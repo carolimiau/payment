@@ -64,17 +64,74 @@ export class PaymentService {
   async commit(commitTransactionDto: CommitTransactionDto) {
     const { token } = commitTransactionDto;
     try {
-      const response = await this.tx.commit(token);
+      // Verificar si ya fue procesada
+      const existingTransaction = await this.transactionRepository.findOne({ where: { token } });
       
-      // Update transaction state
-      const transaction = await this.transactionRepository.findOne({ where: { token } });
-      if (transaction) {
-        transaction.status = response.status; // e.g., 'AUTHORIZED', 'FAILED'
-        transaction.rawResponse = JSON.stringify(response);
-        await this.transactionRepository.save(transaction);
+      let response: any;
+      let alreadyProcessed = false;
+      
+      // Si ya está autorizada, retornar datos almacenados
+      if (existingTransaction && (existingTransaction.status === 'AUTHORIZED' || existingTransaction.rawResponse?.includes('authorization_code'))) {
+        this.logger.log(`⚠️ Transaction already processed, using cached data: ${token.substring(0, 10)}...`);
+        alreadyProcessed = true;
+        
+        try {
+          response = JSON.parse(existingTransaction.rawResponse);
+        } catch (e) {
+          response = { status: existingTransaction.status, amount: existingTransaction.amount };
+        }
       } else {
-        // If for some reason we don't have it (maybe created before migration?), create it
-        const newTransaction = this.transactionRepository.create({
+        // Intentar confirmar con Transbank
+        try {
+          this.logger.log(`🔄 Calling Transbank commit for token: ${token.substring(0, 10)}...`);
+          response = await this.tx.commit(token);
+          this.logger.log(`✅ Transbank commit success:`, JSON.stringify(response));
+        } catch (error: any) {
+          this.logger.error(`❌ Transbank commit failed:`, error.message, error.stack);
+          // Error 422: Transacción ya procesada por otro proceso
+          if (error?.message?.includes('422') || 
+              error?.message?.includes('already locked') ||
+              error?.message?.includes('Invalid status')) {
+            this.logger.warn(`⚠️ Error 422: Transaction already processed, checking database: ${token.substring(0, 10)}...`);
+            
+            // Reintentar leer de la DB con espera (otro proceso podría estar guardando)
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (attempt > 0) {
+                await new Promise(resolve => setTimeout(resolve, 500)); // Esperar 500ms
+                this.logger.log(`Retry ${attempt}/3: Checking database again...`);
+              }
+              
+              const reloaded = await this.transactionRepository.findOne({ where: { token } });
+              if (reloaded && (reloaded.status === 'AUTHORIZED' || reloaded.rawResponse?.includes('authorization_code'))) {
+                alreadyProcessed = true;
+                try {
+                  response = JSON.parse(reloaded.rawResponse);
+                } catch (e) {
+                  response = { status: reloaded.status, amount: reloaded.amount };
+                }
+                this.logger.log(`✅ Found transaction in DB after retry ${attempt}`);
+                break;
+              }
+            }
+            
+            // Si después de reintentos no tenemos confirmación, retornar error genérico sin lanzar
+            if (!alreadyProcessed) {
+              this.logger.warn(`Transaction ${token.substring(0, 10)} not found in DB after retries, returning generic error`);
+              response = { 
+                status: 'PROCESSING', 
+                message: 'Transaction is being processed by another request',
+                error: 'already_processing'
+              };
+            }
+          } else {
+            throw error;
+          }
+        }
+      }
+      
+      // Update transaction state only if not already processed
+      if (!alreadyProcessed) {
+        const transaction = existingTransaction || this.transactionRepository.create({
           token: token,
           status: response.status,
           amount: response.amount,
@@ -82,7 +139,10 @@ export class PaymentService {
           sessionId: response.session_id,
           rawResponse: JSON.stringify(response),
         });
-        await this.transactionRepository.save(newTransaction);
+        
+        transaction.status = response.status;
+        transaction.rawResponse = JSON.stringify(response);
+        await this.transactionRepository.save(transaction);
       }
 
       return response;
