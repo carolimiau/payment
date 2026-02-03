@@ -11,11 +11,11 @@ import { WebpayTransaction } from './entities/WebpayTransaction.entity';
     }),
     TypeOrmModule.forRoot({
       type: 'mysql',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT, 10) || 3306,
-      username: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || 'rayen123%',
-      database: process.env.DB_NAME || 'auto_box',
+      host: process.env.MYSQLHOST, 
+      port: parseInt(process.env.MYSQLPORT, 10), 
+      username: process.env.MYSQLUSER,
+      password: process.env.MYSQLPASSWORD,
+      database: process.env.MYSQLDATABASE,
       entities: [WebpayTransaction],
       synchronize: false, // We rely on the main backend or migrations for schema sync
     }),
