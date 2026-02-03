@@ -17,7 +17,10 @@ import { WebpayTransaction } from './entities/WebpayTransaction.entity';
       password: process.env.MYSQLPASSWORD,
       database: process.env.MYSQLDATABASE,
       entities: [WebpayTransaction],
-      synchronize: false, // We rely on the main backend or migrations for schema sync
+      synchronize: false, // ¡Perfecto! Déjalo así, la tabla ya existe.
+      ssl: {
+        rejectUnauthorized: false, // <--- La pieza clave 🔑
+      },
     }),
     PaymentModule,
   ],
