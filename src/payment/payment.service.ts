@@ -18,15 +18,15 @@ export class PaymentService {
   ) {
     // CORRECCIÓN 1: Lógica segura. 
     // Por defecto es INTEGRACIÓN. Solo si dice 'PRODUCTION' explícitamente, pasa a real.
-    const isProduction = process.env.WEBPAY_ENV === 'PRODUCTION';
+    const isProduction = process.env.TBK_ENV === 'PRODUCTION';
     
     const environment = isProduction 
       ? Environment.Production 
       : Environment.Integration;
 
     // Cargamos llaves (Tu código usa WEBPAY_..., así que mantendremos eso)
-    const commerceCode = process.env.WEBPAY_COMMERCE_CODE || IntegrationCommerceCodes.WEBPAY_PLUS;
-    const apiKey = process.env.WEBPAY_API_KEY || IntegrationApiKeys.WEBPAY;
+    const commerceCode = process.env.TBK_COMMERCE_CODE || IntegrationCommerceCodes.WEBPAY_PLUS;
+    const apiKey = process.env.TBK_API_KEY_SECRET|| IntegrationApiKeys.WEBPAY;
 
     this.logger.log(`🔌 Initializing Webpay Plus in mode: ${isProduction ? '🚨 PRODUCTION (REAL MONEY) 🚨' : '🧪 INTEGRATION (TEST)'}`);
 
