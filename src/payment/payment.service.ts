@@ -16,20 +16,20 @@ export class PaymentService {
     @InjectRepository(WebpayTransaction)
     private transactionRepository: Repository<WebpayTransaction>,
   ) {
-    // 1. Definimos el entorno: Si tu variable dice 'production', usa PROD. 
-    // Si dice 'TEST' o no existe, usa INTEGRACIÓN.
-    const environment = process.env.WEBPAY_ENV === 'TEST' 
+    // CORRECCIÓN 1: Lógica segura. 
+    // Por defecto es INTEGRACIÓN. Solo si dice 'PRODUCTION' explícitamente, pasa a real.
+    const isProduction = process.env.WEBPAY_ENV === 'PRODUCTION';
+    
+    const environment = isProduction 
       ? Environment.Production 
       : Environment.Integration;
 
-    // 2. Cargamos las llaves. 
-    // Si no están en las variables de entorno (por error), usamos las de prueba por defecto para que no falle.
+    // Cargamos llaves (Tu código usa WEBPAY_..., así que mantendremos eso)
     const commerceCode = process.env.WEBPAY_COMMERCE_CODE || IntegrationCommerceCodes.WEBPAY_PLUS;
     const apiKey = process.env.WEBPAY_API_KEY || IntegrationApiKeys.WEBPAY;
 
-    this.logger.log(`🔌 Initializing Webpay Plus in mode: ${process.env.WEBPAY_ENV || 'INTEGRATION (Default)'}`);
+    this.logger.log(`🔌 Initializing Webpay Plus in mode: ${isProduction ? '🚨 PRODUCTION (REAL MONEY) 🚨' : '🧪 INTEGRATION (TEST)'}`);
 
-    // 3. Instanciamos Transbank una sola vez
     this.tx = new WebpayPlus.Transaction(
       new Options(commerceCode, apiKey, environment)
     );
@@ -37,14 +37,17 @@ export class PaymentService {
 
   async create(createTransactionDto: CreateTransactionDto) {
     const { amount, buyOrder, sessionId, returnUrl } = createTransactionDto;
+    
+    // CORRECCIÓN 2: Limpieza de Monto. Transbank falla si recibe decimales en CLP.
+    const cleanAmount = Math.round(amount);
+
     try {
-      const response = await this.tx.create(buyOrder, sessionId, amount, returnUrl);
+      const response = await this.tx.create(buyOrder, sessionId, cleanAmount, returnUrl);
       
-      // Save initial transaction state
       const transaction = this.transactionRepository.create({
         token: response.token,
         status: 'INITIALIZED',
-        amount: amount,
+        amount: cleanAmount,
         buyOrder: buyOrder,
         sessionId: sessionId,
         rawResponse: JSON.stringify(response),
@@ -70,11 +73,10 @@ export class PaymentService {
       let response: any;
       let alreadyProcessed = false;
       
-      // Si ya está autorizada en base de datos, no llamamos a Transbank de nuevo
+      // Si ya está autorizada en DB local, devolvemos lo guardado
       if (existingTransaction && (existingTransaction.status === 'AUTHORIZED' || existingTransaction.rawResponse?.includes('authorization_code'))) {
-        this.logger.log(`⚠️ Transaction already processed locally, using cached data: ${token.substring(0, 10)}...`);
+        this.logger.log(`⚠️ Transaction already processed locally: ${token.substring(0, 10)}...`);
         alreadyProcessed = true;
-        
         try {
           response = JSON.parse(existingTransaction.rawResponse);
         } catch (e) {
@@ -89,18 +91,17 @@ export class PaymentService {
         } catch (error: any) {
           this.logger.error(`❌ Transbank commit failed:`, error.message);
           
-          // Manejo especial error 422 (Doble commit / Race Condition)
+          // Manejo especial error 422 (Race Condition / Doble Confirmación)
+          // Esto ocurre si el usuario o el navegador reenvían la petición muy rápido
           if (error?.message?.includes('422') || 
               error?.message?.includes('already locked') ||
               error?.message?.includes('Invalid status')) {
             
-            this.logger.warn(`⚠️ Error 422 detected. Transaction might be processed by another thread. Checking DB...`);
+            this.logger.warn(`⚠️ Error 422 detected (Possible Race Condition). Checking DB...`);
             
-            // Reintentar leer de la DB (Pequeño delay para dar tiempo al otro proceso de escribir)
+            // Reintentar leer de la DB (Pequeño delay para dar tiempo al otro proceso)
             for (let attempt = 0; attempt < 3; attempt++) {
-              if (attempt > 0) {
-                await new Promise(resolve => setTimeout(resolve, 500)); // Esperar 500ms
-              }
+              if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 800)); // Delay aumentado a 800ms
               
               const reloaded = await this.transactionRepository.findOne({ where: { token } });
               if (reloaded && (reloaded.status === 'AUTHORIZED' || reloaded.rawResponse?.includes('authorization_code'))) {
@@ -116,22 +117,16 @@ export class PaymentService {
             }
             
             if (!alreadyProcessed) {
-              this.logger.warn(`Transaction not found in DB after retries.`);
-              // Devolvemos un estado "en proceso" para que el frontend no muestre error fatal
-              return { 
-                status: 'PROCESSING', 
-                message: 'Transaction is being processed',
-                error: 'already_processing'
-              };
+              // Si falla todo, devolvemos PROCESSING para que el cliente reintente suavemente o espere
+              return { status: 'PROCESSING', message: 'Transaction under process', error: 'already_processing' };
             }
           } else {
-            // Si es otro error (ej: tarjeta rechazada o error de red), lo lanzamos.
             throw error;
           }
         }
       }
       
-      // Guardar en DB solo si obtuvimos respuesta nueva de Transbank
+      // Guardar en DB solo si obtuvimos respuesta fresca de TBK
       if (!alreadyProcessed && response) {
         const transaction = existingTransaction || this.transactionRepository.create({
           token: token,
@@ -140,7 +135,7 @@ export class PaymentService {
         });
         
         transaction.status = response.status;
-        transaction.amount = response.amount; // Asegurar guardar monto confirmado
+        transaction.amount = response.amount;
         transaction.rawResponse = JSON.stringify(response);
         
         await this.transactionRepository.save(transaction);
@@ -156,14 +151,13 @@ export class PaymentService {
   async status(token: string) {
     try {
       const response = await this.tx.status(token);
-      
+      // Actualizamos estado si consultamos
       const transaction = await this.transactionRepository.findOne({ where: { token } });
       if (transaction) {
         transaction.status = response.status;
         transaction.rawResponse = JSON.stringify(response);
         await this.transactionRepository.save(transaction);
       }
-
       return response;
     } catch (error) {
       this.logger.error('Error getting status', error);
@@ -174,22 +168,18 @@ export class PaymentService {
   async refund(refundTransactionDto: RefundTransactionDto) {
     const { token, amount } = refundTransactionDto;
     try {
-      const response = await this.tx.refund(token, amount);
+      const response = await this.tx.refund(token, Math.round(amount)); // Round también aquí por seguridad
       
       const transaction = await this.transactionRepository.findOne({ where: { token } });
       if (transaction) {
-        // Anexamos la info del refund al JSON existente sin borrar lo anterior
         const currentData = transaction.rawResponse ? JSON.parse(transaction.rawResponse) : {};
         transaction.rawResponse = JSON.stringify({ ...currentData, refund: response });
         
-        // Opcional: Si el refund es total, podrías cambiar el estado
         if (response.type === 'NULLIFY' || response.balance === 0) {
            transaction.status = 'REFUNDED';
         }
-        
         await this.transactionRepository.save(transaction);
       }
-
       return response;
     } catch (error) {
       this.logger.error('Error refunding', error);
