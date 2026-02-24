@@ -56,20 +56,25 @@ export class PaymentService {
 
   async create(createTransactionDto: CreateTransactionDto) {
     const { amount, returnUrl } = createTransactionDto;
+    const normalizedAmount = Math.round(amount);
+
+    if (!Number.isInteger(normalizedAmount) || normalizedAmount <= 0) {
+      throw new BadRequestException('Amount must be a positive integer');
+    }
     
     // Limitar largo de strings para evitar rechazo de TBK
     const buyOrder = (createTransactionDto.buyOrder || `order-${Date.now()}`).substring(0, 26);
-    const sessionId = (createTransactionDto.sessionId || `session-${Date.now()}`).substring(0, 61);
+    const sessionId = (createTransactionDto.sessionId || `session-${Date.now()}`).substring(0, 50);
 
-    this.logger.log(`Initiating Transaction | Order: ${buyOrder} | Amount: ${amount}`);
+    this.logger.log(`Initiating Transaction | Order: ${buyOrder} | Amount: ${normalizedAmount}`);
 
     try {
-      const response = await this.tx.create(buyOrder, sessionId, amount, returnUrl);
+      const response = await this.tx.create(buyOrder, sessionId, normalizedAmount, returnUrl);
 
       const transaction = this.transactionRepository.create({
         token: response.token,
         status: 'INITIALIZED',
-        amount: amount,
+        amount: normalizedAmount,
         buyOrder: buyOrder,
         sessionId: sessionId,
         rawResponse: JSON.stringify(response),
@@ -118,15 +123,44 @@ export class PaymentService {
     }
   }
 
-  async markAsAborted(token: string) {
-    if (!token) {
+  async markAsAborted(token?: string, buyOrder?: string, sessionId?: string) {
+    if (!token && !buyOrder && !sessionId) {
       return;
     }
 
     try {
-      const transaction = await this.transactionRepository.findOne({ where: { token } });
+      let transaction: WebpayTransaction | null = null;
+
+      if (token) {
+        transaction = await this.transactionRepository.findOne({ where: { token } });
+      }
+
+      if (!transaction && buyOrder && sessionId) {
+        transaction = await this.transactionRepository.findOne({
+          where: { buyOrder, sessionId },
+          order: { createdAt: 'DESC' },
+        });
+      } else if (!transaction && buyOrder) {
+        transaction = await this.transactionRepository.findOne({
+          where: { buyOrder },
+          order: { createdAt: 'DESC' },
+        });
+      }
+
       if (transaction) {
         transaction.status = 'ABORTED';
+
+        const currentData = transaction.rawResponse ? JSON.parse(transaction.rawResponse) : {};
+        transaction.rawResponse = JSON.stringify({
+          ...currentData,
+          aborted: {
+            at: new Date().toISOString(),
+            token: token || null,
+            buyOrder: buyOrder || null,
+            sessionId: sessionId || null,
+          },
+        });
+
         await this.transactionRepository.save(transaction);
       }
     } catch (error) {

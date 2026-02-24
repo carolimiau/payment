@@ -26,6 +26,14 @@ export class PaymentController {
     return body?.TBK_TOKEN || query?.TBK_TOKEN || null;
   }
 
+  private extractCallbackOrder(body: CommitTransactionDto, query: CommitTransactionDto): string | null {
+    return body?.buy_order || query?.buy_order || body?.TBK_ORDEN_COMPRA || query?.TBK_ORDEN_COMPRA || null;
+  }
+
+  private extractCallbackSession(body: CommitTransactionDto, query: CommitTransactionDto): string | null {
+    return body?.session_id || query?.session_id || body?.TBK_ID_SESION || query?.TBK_ID_SESION || null;
+  }
+
   private buildResultUrl(status: 'success' | 'rejected' | 'aborted' | 'error', result?: any): string {
     const params = new URLSearchParams({ status });
 
@@ -46,16 +54,25 @@ export class PaymentController {
     _req: Request,
     res: Response,
   ) {
+    const callbackOrder = this.extractCallbackOrder(body, query);
+    const callbackSession = this.extractCallbackSession(body, query);
     const cancelToken = this.extractCancelToken(body, query);
+
     if (cancelToken) {
       console.warn('⛔ Compra anulada por usuario en Webpay');
-      await this.paymentService.markAsAborted(cancelToken);
+      await this.paymentService.markAsAborted(cancelToken, callbackOrder || undefined, callbackSession || undefined);
       return res.redirect(this.buildResultUrl('aborted'));
     }
 
     const token = this.extractCommitToken(body, query);
     if (!token) {
-      console.error('❌ Retorno de Webpay sin token válido');
+      if (callbackOrder || callbackSession) {
+        console.warn('⛔ Retorno Webpay sin token: probable timeout o abandono del flujo');
+        await this.paymentService.markAsAborted(undefined, callbackOrder || undefined, callbackSession || undefined);
+        return res.redirect(this.buildResultUrl('aborted'));
+      }
+
+      console.error('❌ Retorno de Webpay sin token ni metadata de callback');
       return res.redirect(this.buildResultUrl('error'));
     }
 
@@ -76,7 +93,7 @@ export class PaymentController {
       return res.redirect(this.buildResultUrl('rejected'));
     } catch (error) {
       console.error('❌ Error en commit:', error);
-      return res.redirect(this.buildResultUrl('aborted'));
+      return res.redirect(this.buildResultUrl('error'));
     }
   }
 

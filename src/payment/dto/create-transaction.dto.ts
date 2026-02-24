@@ -1,18 +1,23 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString, IsUrl } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, MaxLength, Min } from 'class-validator';
 
 export class CreateTransactionDto {
   @ApiProperty({ example: 1000, description: 'Amount to be paid' })
-  @IsNumber()
+  @IsInt()
+  @Min(1)
   amount: number;
 
-  @ApiProperty({ example: 'order-123', description: 'Unique buy order id' })
+  @ApiProperty({ example: 'order-123', description: 'Unique buy order id', required: false })
+  @IsOptional()
   @IsString()
-  buyOrder: string;
+  @MaxLength(26)
+  buyOrder?: string;
 
-  @ApiProperty({ example: 'session-123', description: 'Session id' })
+  @ApiProperty({ example: 'session-123', description: 'Session id', required: false })
+  @IsOptional()
   @IsString()
-  sessionId: string;
+  @MaxLength(50)
+  sessionId?: string;
 
   @ApiProperty({ example: 'http://localhost:3000/callback', description: 'Return URL after payment' })
   @IsUrl()

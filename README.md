@@ -12,16 +12,20 @@ This is a refactored version of the Payment Service using NestJS and TypeORM, in
 2.  Configure environment variables:
     Copy `.env.example` to `.env` (or create one) and set the following variables:
     ```dotenv
-    DB_HOST=localhost
-    DB_PORT=3306
-    DB_USER=root
-    DB_PASSWORD=password
-    DB_NAME=auto_box
+    MYSQLHOST=localhost
+    MYSQLPORT=3306
+    MYSQLUSER=root
+    MYSQLPASSWORD=password
+    MYSQLDATABASE=auto_box
     PORT=3001
-    NODE_ENV=development
-    WEBPAY_COMMERCE_CODE=your_commerce_code
-    WEBPAY_API_KEY=your_api_key
+    TBK_ENV=INTEGRATION
+    TBK_COMMERCE_CODE=your_production_commerce_code
+    TBK_API_KEY_SECRET=your_production_api_key_secret
     ```
+
+    Notes:
+    - For `TBK_ENV=INTEGRATION`, the service uses Transbank integration credentials automatically.
+    - `TBK_COMMERCE_CODE` and `TBK_API_KEY_SECRET` are required only for `TBK_ENV=PRODUCTION`.
 
 3.  Run the application:
     ```bash
@@ -35,7 +39,8 @@ Swagger UI is available at `http://localhost:3001/api`.
 ### Endpoints
 
 -   `POST /create`: Create a new Webpay transaction.
--   `POST /commit`: Commit a Webpay transaction.
+-   `POST /commit`: Commit a Webpay transaction callback.
+-   `GET /commit`: Fallback callback endpoint for Webpay return.
 -   `POST /status`: Get the status of a Webpay transaction.
 -   `POST /refund`: Refund a Webpay transaction.
 
