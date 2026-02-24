@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { 
@@ -90,6 +90,10 @@ export class PaymentService {
 
   async commit(commitTransactionDto: CommitTransactionDto) {
     const { token } = commitTransactionDto;
+    if (!token) {
+      throw new BadRequestException('Token is required to commit transaction');
+    }
+
     this.logger.log(`Committing Transaction Token: ${token.substring(0, 10)}...`);
 
     try {
@@ -111,6 +115,22 @@ export class PaymentService {
         await this.transactionRepository.save(transaction);
       }
       throw new InternalServerErrorException(`TBK Commit Error: ${error.message}`);
+    }
+  }
+
+  async markAsAborted(token: string) {
+    if (!token) {
+      return;
+    }
+
+    try {
+      const transaction = await this.transactionRepository.findOne({ where: { token } });
+      if (transaction) {
+        transaction.status = 'ABORTED';
+        await this.transactionRepository.save(transaction);
+      }
+    } catch (error) {
+      this.logger.warn(`No se pudo marcar transacción como ABORTED: ${error.message}`);
     }
   }
 
