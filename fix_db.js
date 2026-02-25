@@ -2,11 +2,11 @@ const mysql = require('mysql2/promise');
 
 async function main() {
   const connection = await mysql.createConnection({
-    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+    host: process.env.MYSQLHOST,
     port: parseInt(process.env.MYSQLPORT || process.env.DB_PORT || '3306', 10),
-    user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
-    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'auto_box',
+    user: process.env.MYSQLUSER,
+    password: process.env.MYSQLPASSWORD,
+    database: process.env.MYSQLDATABASE,
     ssl: process.env.MYSQLHOST ? { rejectUnauthorized: false } : undefined,
   });
 
