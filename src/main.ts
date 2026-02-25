@@ -1,16 +1,22 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ValidationPipe } from '@nestjs/common'; // 👈 IMPORTANTE: Importar esto
+import { ValidationPipe } from '@nestjs/common';
+import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // 🔥 0. ACTIVAR VALIDACIÓN (CRÍTICO PARA LOS DTOs) 🔥
-  // Sin esto, @IsNumber, @IsString, etc., NO funcionan.
+  // 🔥 CRÍTICO: Habilitar parsing de form-urlencoded EXPLÍCITAMENTE 🔥
+  // Webpay envía callbacks como application/x-www-form-urlencoded, NO JSON.
+  // Sin esto, req.body llega vacío en los callbacks de Webpay y el pago falla.
+  app.use(json({ limit: '1mb' }));
+  app.use(urlencoded({ extended: true, limit: '1mb' }));
+
+  // Activar validación para DTOs (no afecta endpoints que usen @Req() directo)
   app.useGlobalPipes(new ValidationPipe({
-    transform: true, // Convierte tipos (ej: "100" string a 100 number si el DTO lo pide)
-    whitelist: true, // Elimina datos extra que no estén en el DTO
+    transform: true,
+    whitelist: true,
   }));
 
   // 1. Configuración de Swagger
