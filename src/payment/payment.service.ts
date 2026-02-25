@@ -19,6 +19,38 @@ export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   private isProduction: boolean;
 
+  private getConfiguredCommerceCode(): string {
+    return (
+      process.env.TBK_COMMERCE_CODE ||
+      ''
+    ).trim();
+  }
+
+  private getConfiguredApiKey(): string {
+    return (
+      process.env.TBK_API_KEY_SECRET ||
+      ''
+    ).trim();
+  }
+
+  private isUsingIntegrationCredentials(commerceCode: string, apiKey: string): boolean {
+    return (
+      commerceCode === IntegrationCommerceCodes.WEBPAY_PLUS ||
+      apiKey === IntegrationApiKeys.WEBPAY
+    );
+  }
+
+  private formatSdkError(error: any): string {
+    const responseData = error?.response?.data;
+    if (typeof responseData === 'string') {
+      return responseData;
+    }
+    if (responseData) {
+      return JSON.stringify(responseData);
+    }
+    return error?.message || 'Unknown Transbank error';
+  }
+
   constructor(
     @InjectRepository(WebpayTransaction)
     private transactionRepository: Repository<WebpayTransaction>,
@@ -26,6 +58,16 @@ export class PaymentService {
     // 1. Detección de entorno ROBUSTA (Insensible a mayúsculas y espacios)
     const envVar = (process.env.TBK_ENV || '').trim().toUpperCase();
     this.isProduction = envVar === 'PRODUCTION' || envVar === 'PROD';
+
+    const configuredCommerceCode = this.getConfiguredCommerceCode();
+    const configuredApiKey = this.getConfiguredApiKey();
+
+    if (this.isProduction && this.isUsingIntegrationCredentials(configuredCommerceCode, configuredApiKey)) {
+      this.logger.warn(
+        '⚠️ Detectada configuración inconsistente: TBK_ENV=PRODUCTION con credenciales de integración. Se forzará modo INTEGRACIÓN.',
+      );
+      this.isProduction = false;
+    }
 
     this.logger.log(`🔧 Inicializando Transbank en modo: ${this.isProduction ? '🔴 PRODUCCIÓN' : '🟢 INTEGRACIÓN (TEST)'}`);
 
@@ -35,12 +77,12 @@ export class PaymentService {
 
     if (this.isProduction) {
       // MODO PRODUCCIÓN
-      commerceCode = (process.env.TBK_COMMERCE_CODE || '').trim();
-      apiKey = (process.env.TBK_API_KEY_SECRET || '').trim();
+      commerceCode = configuredCommerceCode;
+      apiKey = configuredApiKey;
       environment = Environment.Production;
 
       if (!commerceCode || !apiKey) {
-        this.logger.error('❌ ERROR CRÍTICO: Faltan credenciales de Transbank para Producción en el .env');
+        throw new Error('Faltan credenciales de Transbank para PRODUCCIÓN (TBK_COMMERCE_CODE / TBK_API_KEY_SECRET).');
       }
     } else {
       // MODO INTEGRACIÓN
@@ -88,8 +130,9 @@ export class PaymentService {
         buyOrder, 
       };
     } catch (error) {
-      this.logger.error(`Error creando transacción: ${error.message}`);
-      throw new InternalServerErrorException(`TBK Create Error: ${error.message}`);
+      const errorDetail = this.formatSdkError(error);
+      this.logger.error(`Error creando transacción: ${errorDetail}`);
+      throw new InternalServerErrorException(`TBK Create Error: ${errorDetail}`);
     }
   }
 
@@ -112,14 +155,15 @@ export class PaymentService {
       }
       return response;
     } catch (error) {
-      this.logger.error(`Error confirmando (Commit): ${error.message}`);
+      const errorDetail = this.formatSdkError(error);
+      this.logger.error(`Error confirmando (Commit): ${errorDetail}`);
       // Actualizamos estado a error si existe
       const transaction = await this.transactionRepository.findOne({ where: { token } });
       if (transaction) {
         transaction.status = 'ERROR_COMMIT';
         await this.transactionRepository.save(transaction);
       }
-      throw new InternalServerErrorException(`TBK Commit Error: ${error.message}`);
+      throw new InternalServerErrorException(`TBK Commit Error: ${errorDetail}`);
     }
   }
 
@@ -203,8 +247,9 @@ export class PaymentService {
       }
       return response;
     } catch (error) {
-      this.logger.error(`Error en reembolso: ${error.message}`);
-      throw new InternalServerErrorException(`TBK Refund Error: ${error.message}`);
+      const errorDetail = this.formatSdkError(error);
+      this.logger.error(`Error en reembolso: ${errorDetail}`);
+      throw new InternalServerErrorException(`TBK Refund Error: ${errorDetail}`);
     }
   }
 }

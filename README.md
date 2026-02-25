@@ -19,13 +19,14 @@ This is a refactored version of the Payment Service using NestJS and TypeORM, in
     MYSQLDATABASE=auto_box
     PORT=3001
     TBK_ENV=INTEGRATION
-    TBK_COMMERCE_CODE=your_production_commerce_code
-    TBK_API_KEY_SECRET=your_production_api_key_secret
+    TBK_COMMERCE_CODE=
+    TBK_API_KEY_SECRET=
     ```
 
     Notes:
     - For `TBK_ENV=INTEGRATION`, the service uses Transbank integration credentials automatically.
     - `TBK_COMMERCE_CODE` and `TBK_API_KEY_SECRET` are required only for `TBK_ENV=PRODUCTION`.
+    - Do not use `TBK_ENV=PRODUCTION` with integration/test credentials.
 
 3.  Run the application:
     ```bash
