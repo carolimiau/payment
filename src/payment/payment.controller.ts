@@ -182,6 +182,28 @@ export class PaymentController {
     return this.handleCommit(req, res);
   }
 
+  /**
+   * POST /webpay/callback — Alias de callback para despliegues
+   * que tienen configurado TBK_RETURN_URL con esta ruta.
+   */
+  @Post('webpay/callback')
+  @ApiOperation({ summary: 'Webpay payment callback alias (POST)' })
+  @ApiBody({ type: CommitTransactionDto, required: false })
+  @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
+  async webpayCallbackPost(@Req() req: Request, @Res() res: Response) {
+    return this.handleCommit(req, res);
+  }
+
+  /**
+   * GET /webpay/callback — Alias fallback para callback.
+   */
+  @Get('webpay/callback')
+  @ApiOperation({ summary: 'Webpay payment callback alias (GET)' })
+  @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
+  async webpayCallbackGet(@Req() req: Request, @Res() res: Response) {
+    return this.handleCommit(req, res);
+  }
+
   @Post('status')
   @ApiOperation({ summary: 'Get status of a Webpay transaction' })
   @ApiResponse({ status: 200, description: 'Transaction status retrieved successfully.' })

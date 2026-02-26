@@ -19,6 +19,10 @@ export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   private isProduction: boolean;
 
+  private getConfiguredEnvironment(): string {
+    return (process.env.TBK_ENV || '').trim().toUpperCase();
+  }
+
   private getConfiguredCommerceCode(): string {
     return (
       process.env.TBK_COMMERCE_CODE ||
@@ -31,6 +35,10 @@ export class PaymentService {
       process.env.TBK_API_KEY_SECRET ||
       ''
     ).trim();
+  }
+
+  private getConfiguredReturnUrl(): string {
+    return (process.env.TBK_RETURN_URL || '').trim();
   }
 
   private isUsingIntegrationCredentials(commerceCode: string, apiKey: string): boolean {
@@ -55,18 +63,29 @@ export class PaymentService {
     @InjectRepository(WebpayTransaction)
     private transactionRepository: Repository<WebpayTransaction>,
   ) {
-    // 1. Detección de entorno ROBUSTA (Insensible a mayúsculas y espacios)
-    const envVar = (process.env.TBK_ENV || '').trim().toUpperCase();
-    this.isProduction = envVar === 'PRODUCTION' || envVar === 'PROD';
+    const envVar = this.getConfiguredEnvironment();
 
     const configuredCommerceCode = this.getConfiguredCommerceCode();
     const configuredApiKey = this.getConfiguredApiKey();
+    const hasConfiguredCredentials = !!configuredCommerceCode && !!configuredApiKey;
+    const credentialsAreIntegration = this.isUsingIntegrationCredentials(configuredCommerceCode, configuredApiKey);
 
-    if (this.isProduction && this.isUsingIntegrationCredentials(configuredCommerceCode, configuredApiKey)) {
-      this.logger.warn(
-        '⚠️ Detectada configuración inconsistente: TBK_ENV=PRODUCTION con credenciales de integración. Se forzará modo INTEGRACIÓN.',
-      );
+    if (envVar === 'PRODUCTION' || envVar === 'PROD') {
+      this.isProduction = true;
+    } else if (envVar === 'INTEGRATION' || envVar === 'TEST') {
       this.isProduction = false;
+    } else {
+      this.isProduction = hasConfiguredCredentials && !credentialsAreIntegration;
+    }
+
+    if (this.isProduction && credentialsAreIntegration) {
+      throw new Error(
+        'Configuración inválida: TBK_ENV=PRODUCTION con credenciales de integración. Usa credenciales de PRODUCCIÓN en TBK_COMMERCE_CODE y TBK_API_KEY_SECRET.',
+      );
+    }
+
+    if (!this.isProduction && envVar === 'INTEGRATION' && hasConfiguredCredentials && !credentialsAreIntegration) {
+      this.logger.warn('⚠️ TBK_ENV=INTEGRATION pero se detectaron credenciales de producción. Se mantendrá modo INTEGRATION por configuración explícita.');
     }
 
     this.logger.log(`🔧 Inicializando Transbank en modo: ${this.isProduction ? '🔴 PRODUCCIÓN' : '🟢 INTEGRACIÓN (TEST)'}`);
@@ -98,10 +117,33 @@ export class PaymentService {
 
   async create(createTransactionDto: CreateTransactionDto) {
     const { amount, returnUrl } = createTransactionDto;
+    const configuredReturnUrl = this.getConfiguredReturnUrl();
+    const callbackUrl = configuredReturnUrl || returnUrl;
     const normalizedAmount = Math.round(amount);
 
     if (!Number.isInteger(normalizedAmount) || normalizedAmount <= 0) {
       throw new BadRequestException('Amount must be a positive integer');
+    }
+
+    if (!callbackUrl) {
+      throw new BadRequestException('Return URL is required');
+    }
+
+    if (this.isProduction) {
+      let parsedReturnUrl: URL;
+      try {
+        parsedReturnUrl = new URL(callbackUrl);
+      } catch {
+        throw new BadRequestException('Invalid return URL format for production');
+      }
+
+      if (parsedReturnUrl.protocol !== 'https:') {
+        throw new BadRequestException('Return URL must use HTTPS in production');
+      }
+
+      if (parsedReturnUrl.hostname === 'localhost' || parsedReturnUrl.hostname === '127.0.0.1') {
+        throw new BadRequestException('Return URL must be publicly reachable in production');
+      }
     }
     
     // Limitar largo de strings para evitar rechazo de TBK
@@ -111,7 +153,7 @@ export class PaymentService {
     this.logger.log(`Initiating Transaction | Order: ${buyOrder} | Amount: ${normalizedAmount}`);
 
     try {
-      const response = await this.tx.create(buyOrder, sessionId, normalizedAmount, returnUrl);
+      const response = await this.tx.create(buyOrder, sessionId, normalizedAmount, callbackUrl);
 
       const transaction = this.transactionRepository.create({
         token: response.token,

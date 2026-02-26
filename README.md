@@ -21,11 +21,12 @@ This is a refactored version of the Payment Service using NestJS and TypeORM, in
     TBK_ENV=INTEGRATION
     TBK_COMMERCE_CODE=
     TBK_API_KEY_SECRET=
+    TBK_RETURN_URL=
     ```
 
     Notes:
     - For `TBK_ENV=INTEGRATION`, the service uses Transbank integration credentials automatically.
-    - `TBK_COMMERCE_CODE` and `TBK_API_KEY_SECRET` are required only for `TBK_ENV=PRODUCTION`.
+    - `TBK_COMMERCE_CODE`, `TBK_API_KEY_SECRET`, and an HTTPS `TBK_RETURN_URL` are required for `TBK_ENV=PRODUCTION`.
     - Do not use `TBK_ENV=PRODUCTION` with integration/test credentials.
 
 3.  Run the application:
