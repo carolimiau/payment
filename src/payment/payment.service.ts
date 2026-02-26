@@ -169,7 +169,8 @@ export class PaymentService {
       return {
         token: response.token,
         url: response.url,
-        buyOrder, 
+        buyOrder,
+        sessionId,
       };
     } catch (error) {
       const errorDetail = this.formatSdkError(error);
@@ -199,7 +200,6 @@ export class PaymentService {
     } catch (error) {
       const errorDetail = this.formatSdkError(error);
       this.logger.error(`Error confirmando (Commit): ${errorDetail}`);
-      // Actualizamos estado a error si existe
       const transaction = await this.transactionRepository.findOne({ where: { token } });
       if (transaction) {
         transaction.status = 'ERROR_COMMIT';

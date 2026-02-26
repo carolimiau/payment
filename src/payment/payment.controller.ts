@@ -53,8 +53,15 @@ export class PaymentController {
 
   /**
    * Construye la URL de resultado para redirigir a la app.
+   * Incluye token_ws cuando está disponible para que payment-gateway.tsx
+   * pueda invocar checkPendingPayment(tokenWs) directamente, en lugar de
+   * caer al polling. Alineado con payments_controller.ts del backend.
    */
-  private buildResultUrl(status: 'success' | 'rejected' | 'aborted' | 'error', result?: any): string {
+  private buildResultUrl(
+    status: 'success' | 'rejected' | 'aborted' | 'error',
+    result?: any,
+    token?: string,
+  ): string {
     const params = new URLSearchParams({ status });
 
     if (result?.amount !== undefined) {
@@ -63,6 +70,12 @@ export class PaymentController {
 
     if (result?.buy_order) {
       params.set('buyOrder', String(result.buy_order));
+    }
+
+    // Incluir token_ws para que el frontend pueda confirmar directamente
+    // sin necesidad de polling (alineado con payments_controller.ts del backend)
+    if (token) {
+      params.set('token_ws', token);
     }
 
     return `autobox://payment-result?${params.toString()}`;
@@ -100,7 +113,7 @@ export class PaymentController {
     if (cancelToken) {
       console.warn('⛔ Compra anulada por usuario en Webpay (TBK_TOKEN presente)');
       await this.paymentService.markAsAborted(cancelToken, callbackOrder || undefined, callbackSession || undefined);
-      return res.redirect(this.buildResultUrl('aborted'));
+      return res.redirect(this.buildResultUrl('aborted', undefined, cancelToken));
     }
 
     // ─── Caso 2: Extraemos el token de commit ───
@@ -129,13 +142,13 @@ export class PaymentController {
       console.log('✅ Resultado Transbank:', JSON.stringify(result));
 
       if (result.status === 'AUTHORIZED' && result.response_code === 0) {
-        const successUrl = this.buildResultUrl('success', result);
+        const successUrl = this.buildResultUrl('success', result, token);
         console.log('🚀 Pago exitoso, redirigiendo a:', successUrl);
         return res.redirect(successUrl);
       }
 
       console.warn('⛔ Pago rechazado por Transbank. response_code:', result.response_code, 'status:', result.status);
-      return res.redirect(this.buildResultUrl('rejected'));
+      return res.redirect(this.buildResultUrl('rejected', undefined, token));
     } catch (error) {
       console.error('❌ Error en commit con Transbank:', error?.message || error);
       return res.redirect(this.buildResultUrl('error'));
@@ -154,19 +167,44 @@ export class PaymentController {
   }
 
   /**
-   * POST /commit — Callback principal de Webpay.
-   * Webpay envía un POST form-urlencoded con token_ws después
-   * de que el usuario autoriza el pago en el banco.
-   * 
-   * IMPORTANTE: Se usa @Req() directo en lugar de @Body() + DTO
-   * para evitar que ValidationPipe/whitelist descarte los campos
-   * form-urlencoded que envía Webpay.
+   * POST /commit — Endpoint dual:
+   *
+   * 1. LLAMADA PROGRAMÁTICA (webpay_service.ts del backend):
+   *    Content-Type: application/json, body: { token: "..." }
+   *    → Devuelve JSON con el resultado del commit de Transbank.
+   *
+   * 2. CALLBACK DE TRANSBANK (browser redirect tras pago):
+   *    Content-Type: application/x-www-form-urlencoded, body: token_ws=...
+   *    → Redirige al deep link autobox://payment-result
+   *
+   * IMPORTANTE: Se usa @Req() directo para leer body crudo sin que
+   * ValidationPipe/whitelist descarte los campos form-urlencoded de Transbank.
    */
   @Post('commit')
-  @ApiOperation({ summary: 'Webpay payment callback (POST)' })
+  @ApiOperation({ summary: 'Webpay commit — JSON API o callback de Transbank' })
   @ApiBody({ type: CommitTransactionDto, required: false })
-  @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
+  @ApiResponse({ status: 200, description: 'Commit result (JSON API call).' })
+  @ApiResponse({ status: 302, description: 'Redirects to app (Transbank browser callback).' })
   async commit(@Req() req: Request, @Res() res: Response) {
+    const contentType = req.headers['content-type'] || '';
+    const isJsonCall = contentType.includes('application/json');
+
+    // Llamada programática desde webpay_service.ts → devolver JSON directamente
+    if (isJsonCall) {
+      const token = req.body?.token;
+      if (!token) {
+        return res.status(400).json({ message: 'token is required' });
+      }
+      try {
+        const result = await this.paymentService.commit({ token });
+        return res.json(result);
+      } catch (error: any) {
+        const status = error?.status || error?.response?.status || 500;
+        return res.status(status).json({ message: error?.message || 'Commit failed' });
+      }
+    }
+
+    // Callback de Transbank (form-urlencoded desde el navegador) → redirigir
     return this.handleCommit(req, res);
   }
 
