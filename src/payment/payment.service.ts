@@ -59,6 +59,19 @@ export class PaymentService {
     return error?.message || 'Unknown Transbank error';
   }
 
+  private isAlreadyProcessedCommitError(error: any): boolean {
+    const rawMessage = this.formatSdkError(error).toLowerCase();
+    const httpStatus = error?.response?.status;
+
+    return (
+      httpStatus === 422 ||
+      rawMessage.includes('already') ||
+      rawMessage.includes('committed') ||
+      rawMessage.includes('ha sido') ||
+      rawMessage.includes('ya fue')
+    );
+  }
+
   constructor(
     @InjectRepository(WebpayTransaction)
     private transactionRepository: Repository<WebpayTransaction>,
@@ -200,6 +213,25 @@ export class PaymentService {
     } catch (error) {
       const errorDetail = this.formatSdkError(error);
       this.logger.error(`Error confirmando (Commit): ${errorDetail}`);
+
+      if (this.isAlreadyProcessedCommitError(error)) {
+        try {
+          const statusResponse = await this.tx.status(token);
+
+          const transaction = await this.transactionRepository.findOne({ where: { token } });
+          if (transaction) {
+            transaction.status = statusResponse?.status || transaction.status;
+            transaction.rawResponse = JSON.stringify(statusResponse);
+            await this.transactionRepository.save(transaction);
+          }
+
+          return statusResponse;
+        } catch (statusError) {
+          const statusErrorDetail = this.formatSdkError(statusError);
+          this.logger.error(`Error consultando status tras commit duplicado: ${statusErrorDetail}`);
+        }
+      }
+
       const transaction = await this.transactionRepository.findOne({ where: { token } });
       if (transaction) {
         transaction.status = 'ERROR_COMMIT';

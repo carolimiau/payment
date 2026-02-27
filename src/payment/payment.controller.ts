@@ -187,7 +187,8 @@ export class PaymentController {
   @ApiResponse({ status: 302, description: 'Redirects to app (Transbank browser callback).' })
   async commit(@Req() req: Request, @Res() res: Response) {
     const contentType = req.headers['content-type'] || '';
-    const isJsonCall = contentType.includes('application/json');
+    const hasProgrammaticToken = !!req.body?.token && !req.body?.token_ws && !req.body?.TBK_TOKEN;
+    const isJsonCall = contentType.includes('application/json') || hasProgrammaticToken;
 
     // Llamada programática desde webpay_service.ts → devolver JSON directamente
     if (isJsonCall) {
@@ -239,6 +240,27 @@ export class PaymentController {
   @ApiOperation({ summary: 'Webpay payment callback alias (GET)' })
   @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
   async webpayCallbackGet(@Req() req: Request, @Res() res: Response) {
+    return this.handleCommit(req, res);
+  }
+
+  /**
+   * POST /api/webpay/callback — Alias para despliegues con prefijo /api.
+   */
+  @Post('api/webpay/callback')
+  @ApiOperation({ summary: 'Webpay payment callback alias with /api prefix (POST)' })
+  @ApiBody({ type: CommitTransactionDto, required: false })
+  @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
+  async webpayApiCallbackPost(@Req() req: Request, @Res() res: Response) {
+    return this.handleCommit(req, res);
+  }
+
+  /**
+   * GET /api/webpay/callback — Alias fallback para despliegues con prefijo /api.
+   */
+  @Get('api/webpay/callback')
+  @ApiOperation({ summary: 'Webpay payment callback alias with /api prefix (GET)' })
+  @ApiResponse({ status: 302, description: 'Redirects to app with payment result.' })
+  async webpayApiCallbackGet(@Req() req: Request, @Res() res: Response) {
     return this.handleCommit(req, res);
   }
 
