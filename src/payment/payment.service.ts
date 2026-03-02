@@ -18,6 +18,8 @@ export class PaymentService {
   private tx: any;
   private readonly logger = new Logger(PaymentService.name);
   private isProduction: boolean;
+  private readonly commitPollAttempts = 12;
+  private readonly commitPollDelayMs = 1000;
 
   private getConfiguredEnvironment(): string {
     return (process.env.TBK_ENV || '').trim().toUpperCase();
@@ -59,12 +61,89 @@ export class PaymentService {
     return error?.message || 'Unknown Transbank error';
   }
 
+  private parseResponseCode(value: any): number | null {
+    if (typeof value === 'number') {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  private isAuthorizedResponse(response: any): boolean {
+    const responseCode = this.parseResponseCode(response?.response_code);
+    const status = String(response?.status || '').toUpperCase();
+
+    return status === 'AUTHORIZED' && responseCode === 0;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async saveTransactionSnapshot(token: string, status: string, payload: any) {
+    try {
+      const transaction = await this.transactionRepository.findOne({ where: { token } });
+      if (transaction) {
+        transaction.status = status;
+        transaction.rawResponse = JSON.stringify(payload);
+        await this.transactionRepository.save(transaction);
+      }
+    } catch (error) {
+      this.logger.warn(`No se pudo persistir snapshot de transacción ${token.substring(0, 10)}...: ${error.message}`);
+    }
+  }
+
+  private async waitForAuthorization(token: string) {
+    let lastStatusResponse: any = null;
+
+    this.logger.warn(`⏳ Commit en estado transitorio. Iniciando polling de status para token ${token.substring(0, 10)}...`);
+
+    for (let attempt = 1; attempt <= this.commitPollAttempts; attempt++) {
+      try {
+        const statusResponse = await this.tx.status(token);
+        lastStatusResponse = statusResponse;
+
+        const parsedResponseCode = this.parseResponseCode(statusResponse?.response_code);
+        this.logger.log(
+          `🔎 Poll status intento ${attempt}/${this.commitPollAttempts} | status=${statusResponse?.status} | response_code=${parsedResponseCode}`,
+        );
+
+        if (this.isAuthorizedResponse(statusResponse)) {
+          this.logger.log('✅ Transacción autorizada durante polling de status');
+          await this.saveTransactionSnapshot(token, statusResponse.status, statusResponse);
+          return statusResponse;
+        }
+      } catch (statusError) {
+        const statusErrorDetail = this.formatSdkError(statusError);
+        this.logger.warn(`⚠️ Error consultando status en polling (intento ${attempt}): ${statusErrorDetail}`);
+      }
+
+      await this.sleep(this.commitPollDelayMs);
+    }
+
+    if (lastStatusResponse) {
+      await this.saveTransactionSnapshot(token, lastStatusResponse?.status || 'PENDING', lastStatusResponse);
+    }
+
+    return lastStatusResponse;
+  }
+
   private isAlreadyProcessedCommitError(error: any): boolean {
     const rawMessage = this.formatSdkError(error).toLowerCase();
     const httpStatus = error?.response?.status;
 
     return (
       httpStatus === 422 ||
+      rawMessage.includes("invalid status '19'") ||
+      rawMessage.includes("invalid status '20'") ||
+      rawMessage.includes('while authorizing') ||
       rawMessage.includes('already') ||
       rawMessage.includes('committed') ||
       rawMessage.includes('ha sido') ||
@@ -92,9 +171,10 @@ export class PaymentService {
     }
 
     if (this.isProduction && credentialsAreIntegration) {
-      throw new Error(
-        'Configuración inválida: TBK_ENV=PRODUCTION con credenciales de integración. Usa credenciales de PRODUCCIÓN en TBK_COMMERCE_CODE y TBK_API_KEY_SECRET.',
+      this.logger.warn(
+        '⚠️ Configuración inconsistente detectada: TBK_ENV=PRODUCTION con credenciales de integración. Se forzará modo INTEGRATION para evitar caída del servicio.',
       );
+      this.isProduction = false;
     }
 
     if (!this.isProduction && envVar === 'INTEGRATION' && hasConfiguredCredentials && !credentialsAreIntegration) {
@@ -202,41 +282,25 @@ export class PaymentService {
 
     try {
       const response = await this.tx.commit(token);
-      
-      const transaction = await this.transactionRepository.findOne({ where: { token } });
-      if (transaction) {
-        transaction.status = response.status;
-        transaction.rawResponse = JSON.stringify(response);
-        await this.transactionRepository.save(transaction);
-      }
+
+      await this.saveTransactionSnapshot(token, response.status, response);
+
+      const parsedResponseCode = this.parseResponseCode(response?.response_code);
+      this.logger.log(`📌 Commit response | status=${response?.status} | response_code=${parsedResponseCode}`);
+
       return response;
     } catch (error) {
       const errorDetail = this.formatSdkError(error);
       this.logger.error(`Error confirmando (Commit): ${errorDetail}`);
 
       if (this.isAlreadyProcessedCommitError(error)) {
-        try {
-          const statusResponse = await this.tx.status(token);
-
-          const transaction = await this.transactionRepository.findOne({ where: { token } });
-          if (transaction) {
-            transaction.status = statusResponse?.status || transaction.status;
-            transaction.rawResponse = JSON.stringify(statusResponse);
-            await this.transactionRepository.save(transaction);
-          }
-
+        const statusResponse = await this.waitForAuthorization(token);
+        if (statusResponse) {
           return statusResponse;
-        } catch (statusError) {
-          const statusErrorDetail = this.formatSdkError(statusError);
-          this.logger.error(`Error consultando status tras commit duplicado: ${statusErrorDetail}`);
         }
       }
 
-      const transaction = await this.transactionRepository.findOne({ where: { token } });
-      if (transaction) {
-        transaction.status = 'ERROR_COMMIT';
-        await this.transactionRepository.save(transaction);
-      }
+      await this.saveTransactionSnapshot(token, 'ERROR_COMMIT', { commitError: errorDetail });
       throw new InternalServerErrorException(`TBK Commit Error: ${errorDetail}`);
     }
   }

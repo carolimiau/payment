@@ -11,6 +11,27 @@ import { Response, Request } from 'express';
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 
+  private parseResponseCode(value: any): number | null {
+    if (typeof value === 'number') {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  private isAuthorizedResult(result: any): boolean {
+    const status = String(result?.status || '').toUpperCase();
+    const responseCode = this.parseResponseCode(result?.response_code);
+    return status === 'AUTHORIZED' && responseCode === 0;
+  }
+
   // ──────────────────────────────────────────────────────────────────
   // Helpers internos para extraer datos del callback raw de Webpay
   // ──────────────────────────────────────────────────────────────────
@@ -140,8 +161,13 @@ export class PaymentController {
       const result = await this.paymentService.commit({ token });
 
       console.log('✅ Resultado Transbank:', JSON.stringify(result));
+      console.log(
+        '📌 Decisión callback | status=%s | response_code=%s',
+        result?.status,
+        this.parseResponseCode(result?.response_code),
+      );
 
-      if (result.status === 'AUTHORIZED' && result.response_code === 0) {
+      if (this.isAuthorizedResult(result)) {
         const successUrl = this.buildResultUrl('success', result, token);
         console.log('🚀 Pago exitoso, redirigiendo a:', successUrl);
         return res.redirect(successUrl);

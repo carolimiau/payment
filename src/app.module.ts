@@ -11,16 +11,16 @@ import { WebpayTransaction } from './entities/WebpayTransaction.entity';
     }),
     TypeOrmModule.forRoot({
       type: 'mysql',
-      host: process.env.MYSQLHOST, 
-      port: parseInt(process.env.MYSQLPORT, 10), 
-      username: process.env.MYSQLUSER,
-      password: process.env.MYSQLPASSWORD,
-      database: process.env.MYSQLDATABASE,
+      host: process.env.MYSQLHOST || 'localhost',
+      port: parseInt(process.env.MYSQLPORT || '3306', 10),
+      username: process.env.MYSQLUSER || 'root',
+      password: process.env.MYSQLPASSWORD || '',
+      database: process.env.MYSQLDATABASE || 'auto_box',
       entities: [WebpayTransaction],
       synchronize: false, // ¡Perfecto! Déjalo así, la tabla ya existe.
-      ssl: {
-        rejectUnauthorized: false, // <--- La pieza clave 🔑
-      },
+      ssl: process.env.MYSQL_SSL === 'true' || (process.env.MYSQLHOST && process.env.MYSQLHOST !== 'localhost')
+        ? { rejectUnauthorized: false }
+        : undefined,
     }),
     PaymentModule,
   ],
