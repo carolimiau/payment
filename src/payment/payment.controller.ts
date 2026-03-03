@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Req, Res } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, Res, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { PaymentService } from './payment.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -9,7 +9,19 @@ import { Response, Request } from 'express';
 @ApiTags('payment')
 @Controller()
 export class PaymentController {
+  private readonly logger = new Logger(PaymentController.name);
+
   constructor(private readonly paymentService: PaymentService) {}
+
+  private maskToken(token?: string): string {
+    if (!token) {
+      return '(empty)';
+    }
+    if (token.length <= 10) {
+      return `${token.substring(0, 4)}...`;
+    }
+    return `${token.substring(0, 10)}...`;
+  }
 
   private parseResponseCode(value: any): number | null {
     if (typeof value === 'number') {
@@ -29,7 +41,7 @@ export class PaymentController {
   private isAuthorizedResult(result: any): boolean {
     const status = String(result?.status || '').toUpperCase();
     const responseCode = this.parseResponseCode(result?.response_code);
-    return status === 'AUTHORIZED' && responseCode === 0;
+    return status === 'AUTHORIZED' && (responseCode === 0 || responseCode === null);
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -116,67 +128,69 @@ export class PaymentController {
     const body = req.body || {};
     const query = req.query || {};
 
-    // Log diagnóstico: ver exactamente qué llega del callback
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('📥 WEBPAY CALLBACK RECIBIDO');
-    console.log('   Método:', req.method);
-    console.log('   Content-Type:', req.headers['content-type'] || '(ninguno)');
-    console.log('   Body keys:', Object.keys(body));
-    console.log('   Body:', JSON.stringify(body));
-    console.log('   Query:', JSON.stringify(query));
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    const requestTag = `[${req.method}] ${req.originalUrl || req.url}`;
+
+    this.logger.log(`${requestTag} 📥 WEBPAY CALLBACK RECIBIDO`);
+    this.logger.log(`${requestTag} Content-Type=${req.headers['content-type'] || '(none)'}`);
+    this.logger.log(`${requestTag} Body keys=${Object.keys(body).join(',') || '(none)'}`);
+    this.logger.debug(`${requestTag} Body=${JSON.stringify(body)}`);
+    this.logger.debug(`${requestTag} Query=${JSON.stringify(query)}`);
 
     const callbackOrder = this.extractCallbackOrder(body, query);
     const callbackSession = this.extractCallbackSession(body, query);
     const cancelToken = this.extractCancelToken(body, query);
 
+    this.logger.log(
+      `${requestTag} callback metadata | buyOrder=${callbackOrder || '(none)'} | sessionId=${callbackSession || '(none)'} | cancelToken=${this.maskToken(cancelToken || undefined)}`,
+    );
+
     // ─── Caso 1: Usuario anuló la compra en Webpay ───
     if (cancelToken) {
-      console.warn('⛔ Compra anulada por usuario en Webpay (TBK_TOKEN presente)');
+      this.logger.warn(`${requestTag} ⛔ Compra anulada por usuario en Webpay (TBK_TOKEN presente)`);
       await this.paymentService.markAsAborted(cancelToken, callbackOrder || undefined, callbackSession || undefined);
       return res.redirect(this.buildResultUrl('aborted', undefined, cancelToken));
     }
 
     // ─── Caso 2: Extraemos el token de commit ───
     const token = this.extractCommitToken(body, query);
+    this.logger.log(`${requestTag} token detectado=${this.maskToken(token || undefined)}`);
 
     if (!token) {
       // Sin token ni TBK_TOKEN → probable timeout o abandono
       if (callbackOrder || callbackSession) {
-        console.warn('⛔ Retorno Webpay sin token: probable timeout o abandono');
+        this.logger.warn(`${requestTag} ⛔ Retorno Webpay sin token: probable timeout o abandono`);
         await this.paymentService.markAsAborted(undefined, callbackOrder || undefined, callbackSession || undefined);
         return res.redirect(this.buildResultUrl('aborted'));
       }
 
-      console.error('❌ Retorno de Webpay sin ningún dato identificable');
-      console.error('   Esto indica que el body no fue parseado correctamente.');
-      console.error('   Verificar que express.urlencoded() esté habilitado en main.ts');
+      this.logger.error(`${requestTag} ❌ Retorno de Webpay sin datos identificables`);
+      this.logger.error(`${requestTag} Verificar parsing body y headers del callback`);
       return res.redirect(this.buildResultUrl('error'));
     }
 
     // ─── Caso 3: Commit normal con token ───
     try {
-      console.log('🔄 Confirmando transacción con Transbank, token:', token.substring(0, 15) + '...');
+      this.logger.log(`${requestTag} 🔄 Confirmando transacción con Transbank token=${this.maskToken(token)}`);
 
       const result = await this.paymentService.commit({ token });
 
-      console.log('✅ Resultado Transbank:', JSON.stringify(result));
-      console.log(
-        '📌 Decisión callback | status=%s | response_code=%s',
-        result?.status,
-        this.parseResponseCode(result?.response_code),
+      this.logger.log(
+        `${requestTag} ✅ Resultado Transbank | status=${result?.status} | response_code=${this.parseResponseCode(result?.response_code)}`,
       );
+      this.logger.debug(`${requestTag} payload resultado=${JSON.stringify(result)}`);
 
       if (this.isAuthorizedResult(result)) {
         const successUrl = this.buildResultUrl('success', result, token);
-        console.log('🚀 Pago exitoso, redirigiendo a:', successUrl);
+        this.logger.log(`${requestTag} 🚀 Pago exitoso, redirigiendo a ${successUrl}`);
         return res.redirect(successUrl);
       }
 
-      console.warn('⛔ Pago rechazado por Transbank. response_code:', result.response_code, 'status:', result.status);
+      this.logger.warn(
+        `${requestTag} ⛔ Pago rechazado por Transbank | status=${result?.status} | response_code=${this.parseResponseCode(result?.response_code)}`,
+      );
       return res.redirect(this.buildResultUrl('rejected', undefined, token));
     } catch (error) {
-      console.error('❌ Error en commit con Transbank:', error?.message || error);
+      this.logger.error(`${requestTag} ❌ Error en commit con Transbank: ${error?.message || error}`);
       return res.redirect(this.buildResultUrl('error'));
     }
   }
@@ -189,6 +203,10 @@ export class PaymentController {
   @ApiOperation({ summary: 'Create a new Webpay transaction' })
   @ApiResponse({ status: 201, description: 'Transaction created successfully.' })
   create(@Body() createTransactionDto: CreateTransactionDto) {
+    this.logger.log(
+      `[POST /create] amount=${createTransactionDto?.amount} buyOrder=${createTransactionDto?.buyOrder || '(auto)'} sessionId=${createTransactionDto?.sessionId || '(auto)'}`,
+    );
+    this.logger.debug(`[POST /create] returnUrl=${createTransactionDto?.returnUrl}`);
     return this.paymentService.create(createTransactionDto);
   }
 
@@ -216,17 +234,26 @@ export class PaymentController {
     const hasProgrammaticToken = !!req.body?.token && !req.body?.token_ws && !req.body?.TBK_TOKEN;
     const isJsonCall = contentType.includes('application/json') || hasProgrammaticToken;
 
+    this.logger.log(
+      `[POST /commit] entrada contentType=${contentType || '(none)'} jsonCall=${isJsonCall} token=${this.maskToken(req.body?.token || req.body?.token_ws)}`,
+    );
+
     // Llamada programática desde webpay_service.ts → devolver JSON directamente
     if (isJsonCall) {
       const token = req.body?.token;
       if (!token) {
+        this.logger.warn('[POST /commit] jsonCall sin token');
         return res.status(400).json({ message: 'token is required' });
       }
       try {
         const result = await this.paymentService.commit({ token });
+        this.logger.log(
+          `[POST /commit] jsonCall ok | token=${this.maskToken(token)} | status=${result?.status} | response_code=${this.parseResponseCode(result?.response_code)}`,
+        );
         return res.json(result);
       } catch (error: any) {
         const status = error?.status || error?.response?.status || 500;
+        this.logger.error(`[POST /commit] jsonCall error | token=${this.maskToken(token)} | status=${status} | msg=${error?.message || 'Commit failed'}`);
         return res.status(status).json({ message: error?.message || 'Commit failed' });
       }
     }
@@ -294,6 +321,7 @@ export class PaymentController {
   @ApiOperation({ summary: 'Get status of a Webpay transaction' })
   @ApiResponse({ status: 200, description: 'Transaction status retrieved successfully.' })
   status(@Body('token') token: string) {
+    this.logger.log(`[POST /status] token=${this.maskToken(token)}`);
     return this.paymentService.status(token);
   }
 
@@ -301,6 +329,9 @@ export class PaymentController {
   @ApiOperation({ summary: 'Refund a Webpay transaction' })
   @ApiResponse({ status: 200, description: 'Transaction refunded successfully.' })
   refund(@Body() refundTransactionDto: RefundTransactionDto) {
+    this.logger.log(
+      `[POST /refund] token=${this.maskToken(refundTransactionDto?.token)} amount=${refundTransactionDto?.amount}`,
+    );
     return this.paymentService.refund(refundTransactionDto);
   }
 }

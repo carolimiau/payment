@@ -2,12 +2,16 @@ const mysql = require('mysql2/promise');
 
 async function main() {
   const connection = await mysql.createConnection({
-    host: process.env.MYSQLHOST,
+    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.MYSQLPORT || process.env.DB_PORT || '3306', 10),
-    user: process.env.MYSQLUSER,
-    password: process.env.MYSQLPASSWORD,
-    database: process.env.MYSQLDATABASE,
-    ssl: process.env.MYSQLHOST ? { rejectUnauthorized: false } : undefined,
+    user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
+    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || 'PsSRkvOapIfYDeREGwpfAIHDSkNmNHWA',
+    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
+    ssl:
+      process.env.MYSQL_SSL === 'true' ||
+      (process.env.MYSQLHOST && process.env.MYSQLHOST !== 'localhost' && process.env.MYSQLHOST !== '127.0.0.1')
+        ? { rejectUnauthorized: false }
+        : undefined,
   });
 
   try {

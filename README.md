@@ -41,8 +41,12 @@ Swagger UI is available at `http://localhost:3001/api`.
 ### Endpoints
 
 -   `POST /create`: Create a new Webpay transaction.
--   `POST /commit`: Commit a Webpay transaction callback.
+-   `POST /commit`: Dual endpoint (JSON commit API + browser callback).
 -   `GET /commit`: Fallback callback endpoint for Webpay return.
+-   `POST /webpay/callback`: Callback alias when `TBK_RETURN_URL` uses this path.
+-   `GET /webpay/callback`: Callback alias fallback.
+-   `POST /api/webpay/callback`: Callback alias for deployments with `/api` prefix.
+-   `GET /api/webpay/callback`: Callback alias fallback for deployments with `/api` prefix.
 -   `POST /status`: Get the status of a Webpay transaction.
 -   `POST /refund`: Refund a Webpay transaction.
 
