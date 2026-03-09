@@ -39,7 +39,7 @@ export class AppModule implements OnModuleInit {
 
   private async ensureUpdatedAtColumn(): Promise<void> {
     try {
-      const [rows] = await this.dataSource.query(
+      const rows = await this.dataSource.query(
         `
           SELECT COLUMN_NAME
           FROM INFORMATION_SCHEMA.COLUMNS
@@ -65,6 +65,11 @@ export class AppModule implements OnModuleInit {
 
       this.logger.log("Parche aplicado: columna 'updatedAt' creada correctamente.");
     } catch (error: any) {
+      if (error?.code === 'ER_DUP_FIELDNAME') {
+        this.logger.log("La columna 'updatedAt' ya existía. Parche de compatibilidad omitido.");
+        return;
+      }
+
       this.logger.error(
         `No se pudo validar/parchar la columna 'updatedAt': ${error?.message || error}`,
       );
