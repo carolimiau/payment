@@ -298,10 +298,17 @@ export class PaymentService {
     this.logger.log(`Initiating Transaction | Order: ${buyOrder} | Amount: ${normalizedAmount}`);
     this.logger.log(`🟦 [create] buyOrder final=${buyOrder} | sessionId final=${sessionId}`);
 
+    let response: any;
     try {
-      const response = await this.tx.create(buyOrder, sessionId, normalizedAmount, callbackUrl);
+      response = await this.tx.create(buyOrder, sessionId, normalizedAmount, callbackUrl);
       this.logger.log(`🟦 [create] tx.create OK | token=${this.maskToken(response?.token)} | url=${response?.url}`);
+    } catch (error) {
+      const errorDetail = this.formatSdkError(error);
+      this.logger.error(`Error creando transacción en Transbank: ${errorDetail}`);
+      throw new InternalServerErrorException(`TBK Create Error: ${errorDetail}`);
+    }
 
+    try {
       const transaction = this.transactionRepository.create({
         token: response.token,
         status: 'INITIALIZED',
@@ -313,18 +320,17 @@ export class PaymentService {
 
       await this.transactionRepository.save(transaction);
       this.logger.log(`🟦 [create] transacción guardada localmente | token=${this.maskToken(response?.token)} status=INITIALIZED`);
-      
-      return {
-        token: response.token,
-        url: response.url,
-        buyOrder,
-        sessionId,
-      };
-    } catch (error) {
-      const errorDetail = this.formatSdkError(error);
-      this.logger.error(`Error creando transacción: ${errorDetail}`);
-      throw new InternalServerErrorException(`TBK Create Error: ${errorDetail}`);
+    } catch (error: any) {
+      this.logger.error(`Error guardando transacción local: ${error?.message || error}`);
+      throw new InternalServerErrorException('Local transaction persistence error');
     }
+
+    return {
+      token: response.token,
+      url: response.url,
+      buyOrder,
+      sessionId,
+    };
   }
 
   async commit(commitTransactionDto: CommitTransactionDto) {
